@@ -9,6 +9,8 @@ Two connected, independently defensible projects for real-data autonomy foundati
 
 ![Autonomy Foundation Models roadmap](docs/images/autonomy-foundation-models-roadmap.png)
 
+![Part 1 Cheat Sheet](docs/images/part1_cheat_sheet.png)
+
 ## Program boundaries
 
 - Pretrained checkpoints only; no foundation model is trained from random initialization.

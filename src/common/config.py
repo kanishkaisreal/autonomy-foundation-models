@@ -13,7 +13,10 @@ import yaml
 class ConfigError(ValueError):
     """Raised when the project configuration is invalid."""
 
-
+class ConfigValidationError(ValueError):
+    """Raised when loaded configuration values are operationally invalid."""
+    
+    
 @dataclass(frozen=True, slots=True)
 class ProjectSection:
     name: str
@@ -125,6 +128,18 @@ def _expect(value: Any, expected_type: type, field_name: str) -> Any:
         raise ConfigError(f"{field_name!r} must be a {expected_type.__name__}.")
     return value
 
+ALLOWED_DEVICES = {"auto", "cpu", "mps", "cuda"}
+
+ALLOWED_PRECISIONS = {"fp32", "fp16", "bf16"}
+
+DEVICE_PRECISION_POLICY = {
+    "auto": {"fp32", "fp16", "bf16"},
+    "cpu": {"fp32"},
+    "mps": {"fp32", "fp16"},
+    "cuda": {"fp32", "fp16", "bf16"},
+}
+
+
 
 def load_project_config(
     config_path: str | Path,
@@ -202,17 +217,208 @@ def load_project_config(
     )
 
 
-def main() -> None:
-    """Run function 001 manually with F5."""
-    root = Path(__file__).resolve().parents[2]
-    config = load_project_config(root / "configs" / "base.yaml")
+def validate_project_config(
+    config: ProjectConfig,
+    *,
+    project_root: str | Path | None = None,
+) -> None:
+    """
+    Validate that a loaded ProjectConfig is operationally coherent.
 
+    This function validates declared configuration values but does not inspect
+    actual accelerator availability. CPU, MPS, and CUDA capability detection
+    belongs to ``resolve_compute_device``.
+
+    Args:
+        config:
+            Typed configuration returned by ``load_project_config``.
+        project_root:
+            Repository root used to resolve relative paths. When omitted, the
+            root is inferred from this module's location.
+
+    Raises:
+        ConfigValidationError:
+            If one or more configuration values are invalid.
+    """
+    root = (
+        Path(project_root).expanduser()
+        if project_root is not None
+        else Path(__file__).resolve().parents[2]
+    )
+
+    errors: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Project metadata
+    # ------------------------------------------------------------------
+    if not config.project.name.strip():
+        errors.append("project.name must not be empty.")
+
+    if not config.project.version.strip():
+        errors.append("project.version must not be empty.")
+
+    if config.project.seed < 0:
+        errors.append(
+            f"project.seed must be nonnegative; received {config.project.seed}."
+        )
+
+    # ------------------------------------------------------------------
+    # Runtime configuration
+    # ------------------------------------------------------------------
+    device = config.runtime.device
+
+    if device not in ALLOWED_DEVICES:
+        errors.append(
+            f"runtime.device must be one of {sorted(ALLOWED_DEVICES)}; "
+            f"received {device!r}."
+        )
+
+    precision = config.runtime.precision
+
+    if precision not in ALLOWED_PRECISIONS:
+        errors.append(
+            f"runtime.precision must be one of {sorted(ALLOWED_PRECISIONS)}; "
+            f"received {precision!r}."
+        )
+
+    if device in DEVICE_PRECISION_POLICY and precision in ALLOWED_PRECISIONS:
+        supported_precisions = DEVICE_PRECISION_POLICY[device]
+
+        if precision not in supported_precisions:
+            errors.append(
+                f"runtime.precision={precision!r} is not supported by this "
+                f"project when runtime.device={device!r}. "
+                f"Allowed values: {sorted(supported_precisions)}."
+            )
+
+    if config.runtime.num_workers < 0:
+        errors.append(
+            "runtime.num_workers must be nonnegative; "
+            f"received {config.runtime.num_workers}."
+        )
+
+    # ------------------------------------------------------------------
+    # Paths
+    # ------------------------------------------------------------------
+    def resolve_path(path: Path) -> Path:
+        expanded = path.expanduser()
+        return expanded if expanded.is_absolute() else root / expanded
+
+    data_root = resolve_path(config.paths.data_root)
+    output_root = resolve_path(config.paths.output_root)
+    cache_root = resolve_path(config.paths.cache_root)
+
+    if not data_root.exists():
+        errors.append(
+            f"paths.data_root does not exist: {data_root}. "
+            "Create the directory or update configs/base.yaml."
+        )
+    elif not data_root.is_dir():
+        errors.append(
+            f"paths.data_root must be a directory: {data_root}."
+        )
+
+    for field_name, path in (
+        ("paths.output_root", output_root),
+        ("paths.cache_root", cache_root),
+    ):
+        if path.exists() and not path.is_dir():
+            errors.append(
+                f"{field_name} must be a directory when it exists: {path}."
+            )
+
+        if not path.exists() and not path.parent.exists():
+            errors.append(
+                f"The parent directory for {field_name} does not exist: "
+                f"{path.parent}."
+            )
+
+    if data_root == output_root:
+        errors.append(
+            "paths.data_root and paths.output_root must be different directories."
+        )
+
+    if data_root == cache_root:
+        errors.append(
+            "paths.data_root and paths.cache_root must be different directories."
+        )
+
+    # ------------------------------------------------------------------
+    # Pretrained checkpoints
+    # ------------------------------------------------------------------
+    def validate_checkpoint(
+        field_name: str,
+        checkpoint: str | None,
+        *,
+        optional: bool,
+    ) -> None:
+        if checkpoint is None:
+            if optional:
+                return
+
+            errors.append(f"{field_name} must not be null.")
+            return
+
+        if not checkpoint.strip():
+            errors.append(f"{field_name} must not be empty.")
+            return
+
+        if "\n" in checkpoint or "\r" in checkpoint:
+            errors.append(
+                f"{field_name} must be a single-line checkpoint identifier."
+            )
+
+    validate_checkpoint(
+        "models.vlm_checkpoint",
+        config.models.vlm_checkpoint,
+        optional=False,
+    )
+    validate_checkpoint(
+        "models.text_checkpoint",
+        config.models.text_checkpoint,
+        optional=False,
+    )
+    validate_checkpoint(
+        "models.radar_checkpoint",
+        config.models.radar_checkpoint,
+        optional=True,
+    )
+
+    if errors:
+        formatted_errors = "\n".join(
+            f"  {index}. {message}"
+            for index, message in enumerate(errors, start=1)
+        )
+
+        raise ConfigValidationError(
+            "Project configuration validation failed:\n"
+            f"{formatted_errors}"
+        )
+        
+        
+
+def main() -> None:
+    """Load and validate the base configuration for manual F5 execution."""
+    repository_root = Path(__file__).resolve().parents[2]
+    config_path = repository_root / "configs" / "base.yaml"
+
+    config = load_project_config(config_path)
+    validate_project_config(
+        config,
+        project_root=repository_root,
+    )
+
+    print("Configuration loaded and validated successfully.")
+    print()
     print(config)
-    print(f"Project: {config.project.name}")
+    print()
+    print(f"Project name: {config.project.name}")
     print(f"Seed: {config.project.seed}")
     print(f"Requested device: {config.runtime.device}")
-    print(f"Data root: {config.paths.data_root}")
-    print(f"VLM checkpoint: {config.models.vlm_checkpoint}")
+    print(f"Precision: {config.runtime.precision}")
+    print(f"Data root: {repository_root / config.paths.data_root}")
+    print(f"Output root: {repository_root / config.paths.output_root}")
+    print(f"Pretrained VLM checkpoint: {config.models.vlm_checkpoint}")
 
 
 if __name__ == "__main__":
