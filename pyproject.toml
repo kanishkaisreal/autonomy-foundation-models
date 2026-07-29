@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autonomy-foundation-models"
+version = "0.1.0"
+description = "Radar perception and multimodal alignment for autonomous-driving foundation models."
+requires-python = ">=3.12"
+dependencies = [
+    "PyYAML",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

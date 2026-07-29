@@ -1,0 +1,19 @@
+project:
+  name: autonomy-foundation-models
+  version: "0.1.0"
+  seed: 42
+
+paths:
+  data_root: data
+  output_root: outputs
+  cache_root: .cache
+
+runtime:
+  device: auto
+  precision: fp32
+  num_workers: 0
+
+models:
+  vlm_checkpoint: Qwen/Qwen2.5-VL-3B-Instruct
+  text_checkpoint: Qwen/Qwen2.5-0.5B-Instruct
+  radar_checkpoint: null
