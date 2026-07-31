@@ -79,7 +79,7 @@ Load the public DriveLM supervision, resolve camera assets, and create scene-lev
 | 016 | `validate_drivelm_images src/drivelm_align/data/images.py` | Validate image existence, readability, dimensions, camera identity, and duplicate paths. |
 | 017 | `extract_drivelm_qa_records src/drivelm_align/data/qa.py` | Flatten the native QA graph into typed task records while retaining source hierarchy and provenance. |
 | 018 | `extract_drivelm_object_tags src/drivelm_align/data/objects.py` | Parse key-object tags, camera view, category, status, and native 2D box metadata. |
-| 019 | `group_records_by_scene src/drivelm_align/data/splits.py` | Group all image, QA, and object records by scene_token before any split operation. |
+| 019 | `group_records_by_scene src/drivelm_align/data/grouping.py` | Group all image, QA, and object records by scene_token before any split operation. |
 | 020 | `split_scene_tokens src/drivelm_align/data/splits.py` | Create deterministic train/validation/test scene-token partitions using a fixed seed and configured ratios. |
 | 021 | `assign_records_to_split src/drivelm_align/data/splits.py` | Assign every canonical record to the split inherited from its scene token. |
 | 022 | `assert_scene_split_disjointness src/drivelm_align/data/validation.py` | Assert that scene-token intersections between train, validation, and test are empty. |
