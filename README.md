@@ -11,6 +11,9 @@ Two connected, independently defensible projects for real-data autonomy foundati
 
 ![Part 1 Cheat Sheet](docs/images/part1_cheat_sheet.png)
 
+![DriveFusion Align Program Architecture](docs/images/DriveFusion-Align Program Architecture.png)
+
+
 ## Program boundaries
 
 - Pretrained checkpoints only; no foundation model is trained from random initialization.
