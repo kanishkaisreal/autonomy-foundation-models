@@ -1,4 +1,5 @@
 from __future__ import annotations
+from PIL import Image
 
 from pathlib import Path
 
@@ -16,6 +17,42 @@ from drivelm_align.data.split_types import DriveLMSplitPartition
 from drivelm_align.data.splits import (
     assign_records_to_split,
     split_scene_tokens,
+    write_split_manifests,
+)
+
+from drivelm_align.data.validation import (
+    assert_scene_split_disjointness,
+)
+from drivelm_align.data.validation import (
+    assert_frame_split_disjointness,
+    assert_scene_split_disjointness,
+)
+
+from drivelm_align.data.subsets import (
+    build_drivelm_local_subset,
+)
+
+from drivelm_align.visualization.scenes import (
+    render_drivelm_multiview_scene,
+)
+
+
+import json
+from tempfile import TemporaryDirectory
+
+import matplotlib.pyplot as plt
+
+from drivelm_align.data.statistics import (
+    compute_split_statistics,
+)
+
+from common.checksums import compute_file_checksum
+
+from drivelm_align.data.splits import (
+    assign_records_to_split,
+    load_split_manifest,
+    split_scene_tokens,
+    write_split_manifests,
 )
 
 
@@ -106,6 +143,9 @@ def main() -> None:
         scene_split=scene_split,
     )
 
+    assert_scene_split_disjointness(scene_split)
+    print("Scene split disjointness: PASS")
+    
     # This script targets the repository's pinned development dataset.
     assert annotations.scene_count == 696
     assert scene_index.frame_count == 4_072
@@ -275,6 +315,9 @@ def main() -> None:
             for group in partition.scene_groups
         )
 
+    assert_frame_split_disjointness(record_assignment)
+    print("Frame split disjointness: PASS")
+    
     print()
     print("Record-assignment verification:")
     print("  Every scene assigned once:   PASS")
@@ -285,5 +328,308 @@ def main() -> None:
     print("  Records inherit scene split: PASS")
 
 
+    split_statistics = compute_split_statistics(
+        record_assignment
+    )
+
+    print()
+    print("Split statistics:")
+
+    for split_name, statistics in split_statistics.items():
+        counts = statistics["counts"]
+        prompt_lengths = statistics[
+            "prompt_length_words"
+        ]
+        answer_lengths = statistics[
+            "answer_length_words"
+        ]
+
+        print(
+            f"  {split_name}: "
+            f"scenes={counts['scenes']:,}, "
+            f"frames={counts['frames']:,}, "
+            f"QA={counts['qa_records']:,}, "
+            f"mean prompt={prompt_lengths['mean']}, "
+            f"mean answer={answer_lengths['mean']}"
+        )
+
+    with TemporaryDirectory() as temporary_directory:
+        temporary_root = Path(temporary_directory)
+
+        report_path = (
+            temporary_root / "split_statistics.json"
+        )
+
+        report_path.write_text(
+            json.dumps(
+                split_statistics,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+        loaded_report = json.loads(
+            report_path.read_text(encoding="utf-8")
+        )
+
+        assert loaded_report == split_statistics
+
+        split_names = list(split_statistics)
+        qa_counts = [
+            split_statistics[name]["counts"][
+                "qa_records"
+            ]
+            for name in split_names
+        ]
+
+        plt.figure()
+        plt.bar(split_names, qa_counts)
+        plt.ylabel("QA records")
+        plt.title("DriveLM QA records by split")
+        plt.tight_layout()
+
+        plot_path = (
+            temporary_root
+            / "split_qa_comparison.png"
+        )
+
+        plt.savefig(plot_path)
+        plt.close()
+
+        assert report_path.exists()
+        assert plot_path.exists()
+
+    print("Split statistics report: PASS")
+    print("Split comparison plot:   PASS")
+
+    with TemporaryDirectory() as temporary_directory:
+        manifest_path, manifest_checksum = (
+            write_split_manifests(
+                assignment=record_assignment,
+                scene_split=scene_split,
+                source_path=annotation_path,
+                output_path=(
+                    Path(temporary_directory)
+                    / "drivelm_split_manifest.json"
+                ),
+            )
+        )
+
+        manifest = json.loads(
+            manifest_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        assert manifest["source"]["sha256"] == (
+            compute_file_checksum(annotation_path)
+        )
+
+        assert manifest["split_policy"]["seed"] == 42
+        assert manifest["split_policy"]["unit"] == (
+            "scene_token"
+        )
+
+        assert len(
+            manifest["splits"]["train"][
+                "scene_tokens"
+            ]
+        ) == 487
+
+        assert len(
+            manifest["splits"]["validation"][
+                "scene_tokens"
+            ]
+        ) == 104
+
+        assert len(
+            manifest["splits"]["test"][
+                "scene_tokens"
+            ]
+        ) == 105
+
+        assert compute_file_checksum(
+            manifest_path
+        ) == manifest_checksum
+
+        print()
+        print("Split manifest:")
+        print("  Manifest written:         PASS")
+        print("  Source checksum recorded: PASS")
+        print("  Seed and policy recorded: PASS")
+        print("  Scene lists recorded:     PASS")
+        print(
+            f"  Manifest SHA-256: "
+            f"{manifest_checksum}"
+        )
+
+        loaded_manifest = load_split_manifest(
+            manifest_path,
+            source_path=annotation_path,
+            expected_manifest_checksum=manifest_checksum,
+        )
+
+        assert loaded_manifest == manifest
+
+        # Confirm that a manifest cannot be reused with a
+        # different annotation source.
+        different_source_path = (
+            Path(temporary_directory)
+            / "different_annotations.json"
+        )
+
+        different_source_path.write_text(
+            "{}\n",
+            encoding="utf-8",
+        )
+
+        try:
+            load_split_manifest(
+                manifest_path,
+                source_path=different_source_path,
+                expected_manifest_checksum=manifest_checksum,
+            )
+        except ValueError:
+            stale_manifest_rejected = True
+        else:
+            stale_manifest_rejected = False
+
+        assert stale_manifest_rejected
+
+        print()
+        print("Split manifest loading:")
+        print("  Manifest loaded:          PASS")
+        print("  Manifest checksum valid:  PASS")
+        print("  Source checksum valid:    PASS")
+        print("  Stale manifest rejected:  PASS")
+
+
+    local_subset = build_drivelm_local_subset(
+        record_assignment,
+        train_scene_count=8,
+        validation_scene_count=4,
+        seed=42,
+    )
+
+    repeated_subset = build_drivelm_local_subset(
+        record_assignment,
+        train_scene_count=8,
+        validation_scene_count=4,
+        seed=42,
+    )
+
+    def scene_tokens(partition):
+        return tuple(
+            group.scene_token
+            for group in partition.scene_groups
+        )
+
+    def task_names(partition):
+        return {
+            record.task_name
+            for group in partition.scene_groups
+            for record in group.qa_records
+        }
+
+    assert local_subset["train"].scene_count == 8
+    assert local_subset["validation"].scene_count == 4
+
+    assert scene_tokens(
+        local_subset["train"]
+    ) == scene_tokens(
+        repeated_subset["train"]
+    )
+
+    assert scene_tokens(
+        local_subset["validation"]
+    ) == scene_tokens(
+        repeated_subset["validation"]
+    )
+
+    assert task_names(
+        local_subset["train"]
+    ) == task_names(
+        record_assignment.train
+    )
+
+    assert task_names(
+        local_subset["validation"]
+    ) == task_names(
+        record_assignment.validation
+    )
+
+    print()
+    print("DriveLM local subset:")
+    print(
+        f"  Train scenes:      "
+        f"{local_subset['train'].scene_count}"
+    )
+    print(
+        f"  Validation scenes: "
+        f"{local_subset['validation'].scene_count}"
+    )
+    print(
+        f"  Train tasks:       "
+        f"{sorted(task_names(local_subset['train']))}"
+    )
+    print(
+        f"  Validation tasks:  "
+        f"{sorted(task_names(local_subset['validation']))}"
+    )
+    print("  Deterministic selection: PASS")
+    print("  Scene boundaries kept:   PASS")
+    print("  Task diversity retained: PASS")
+    
+    render_group = next(
+        group
+        for group in grouping.groups.values()
+        if len(group.image_records) >= 6
+    )
+
+    render_frame_token = (
+        render_group.frame_tokens[0]
+    )
+
+    frame_images = [
+        record
+        for record in render_group.image_records
+        if record.frame_token == render_frame_token
+    ]
+
+    frame_objects = [
+        record
+        for record in render_group.object_records
+        if record.frame_token == render_frame_token
+    ]
+
+    assert len(frame_images) == 6
+
+    with TemporaryDirectory() as temporary_directory:
+        figure_path = render_drivelm_multiview_scene(
+            render_group,
+            frame_token=render_frame_token,
+            output_path=(
+                Path(temporary_directory)
+                / "drivelm_multiview.png"
+            ),
+        )
+
+        assert figure_path.is_file()
+        assert figure_path.stat().st_size > 0
+
+        with Image.open(figure_path) as figure_image:
+            figure_image.verify()
+
+    print()
+    print("DriveLM multiview rendering:")
+    print(f"  Scene:          {render_group.scene_token}")
+    print(f"  Frame:          {render_frame_token}")
+    print(f"  Camera views:   {len(frame_images)}")
+    print(f"  Object overlays:{len(frame_objects):>4}")
+    print("  Figure created: PASS")
+    print("  Figure readable: PASS")
+    
+        
 if __name__ == "__main__":
     main()
