@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
 import random
 from collections.abc import Iterable
+from pathlib import Path
+
+from common.checksums import compute_file_checksum
 
 from drivelm_align.data.grouping import (
     DriveLMSceneGrouping,
@@ -16,11 +20,6 @@ from drivelm_align.data.split_types import (
     DriveLMSplitPartition,
 )
 
-import json
-from pathlib import Path
-
-from common.checksums import compute_file_checksum
-
 
 __all__ = [
     "DriveLMRecordSplitAssignment",
@@ -31,8 +30,9 @@ __all__ = [
     "DriveLMSplitPartition",
     "assign_records_to_split",
     "group_records_by_scene",
+    "load_split_manifest",
     "split_scene_tokens",
-    'load_split_manifest',
+    "write_split_manifests",
 ]
 
 
@@ -255,7 +255,7 @@ def write_split_manifests(
     source_path: Path,
     output_path: Path,
 ) -> tuple[Path, str]:
-    """Write a deterministic DriveLM split manifest and return its checksum."""
+    """Persist deterministic split membership, summaries, and provenance."""
     if assignment.scene_to_split != scene_split.scene_to_split:
         raise ValueError(
             "The record assignment does not match the scene split."
@@ -352,7 +352,7 @@ def load_split_manifest(
     source_path: Path,
     expected_manifest_checksum: str | None = None,
 ) -> dict[str, object]:
-    """Load a split manifest and verify its manifest and source checksums."""
+    """Load a manifest only when its manifest and source checksums match."""
     manifest_path = Path(manifest_path)
     source_path = Path(source_path)
 
@@ -381,3 +381,22 @@ def load_split_manifest(
         )
 
     return manifest
+
+
+def main() -> None:
+    """Build a tiny deterministic scene split for local F5 debugging."""
+    scene_split = split_scene_tokens(
+        [f"scene-{index:02d}" for index in range(20)],
+        seed=42,
+    )
+    print(
+        "Scene split: "
+        f"train={scene_split.train_count}, "
+        f"validation={scene_split.validation_count}, "
+        f"test={scene_split.test_count}, "
+        f"seed={scene_split.seed}"
+    )
+
+
+if __name__ == "__main__":
+    main()

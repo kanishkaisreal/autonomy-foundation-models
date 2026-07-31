@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Iterable, Iterator, Mapping
+
 
 class JsonlWriteError(ValueError):
     """Raised when records cannot be written as valid JSONL."""
 
 class JsonlReadError(ValueError):
     """Raised when a JSONL file contains an invalid record."""
-    
+
 
 def save_jsonl_records(
     records: Iterable[Mapping[str, Any]],
@@ -193,82 +193,28 @@ def load_jsonl_records(
 
             if limit is not None and records_yielded >= limit:
                 break
-            
-            
-            
-            
+
+
 def main() -> None:
     """Write and reload temporary JSONL records using F5."""
     sample_records = [
-        {
-            "scene_id": "scene-001",
-            "question": "What is directly ahead of the ego vehicle?",
-            "objects": ["car-1", "pedestrian-1"],
-        },
-        {
-            "scene_id": "scene-002",
-            "question": "Is the lead vehicle moving?",
-            "objects": ["car-2"],
-        },
+        {"scene_id": "scene-001", "action": "stop"},
+        {"scene_id": "scene-002", "action": "proceed"},
     ]
-
-    def validate_sample_record(
-        record: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        required_fields = {
-            "scene_id",
-            "question",
-            "objects",
-        }
-
-        missing_fields = required_fields - record.keys()
-
-        if missing_fields:
-            raise ValueError(
-                f"Missing required fields: {sorted(missing_fields)}"
-            )
-
-        return dict(record)
-
     with tempfile.TemporaryDirectory(
-        prefix="afm-jsonl-check-"
+        prefix="afm-jsonl-debug-"
     ) as temporary_directory:
-        output_path = (
-            Path(temporary_directory)
-            / "sample_records.jsonl"
-        )
-
-        save_jsonl_records(
+        output_path = Path(temporary_directory) / "records.jsonl"
+        count = save_jsonl_records(
             records=sample_records,
             output_path=output_path,
         )
-
-        loaded_records = list(
-            load_jsonl_records(
-                input_path=output_path,
-                validator=validate_sample_record,
-            )
-        )
-
-        first_record_only = list(
-            load_jsonl_records(
-                input_path=output_path,
-                limit=1,
-            )
-        )
-
-        print("JSONL records loaded successfully.")
-        print()
-        print(f"Records loaded: {len(loaded_records)}")
-        print(f"First record:   {loaded_records[0]}")
-        print(f"Limit=1 count:  {len(first_record_only)}")
+        loaded_records = list(load_jsonl_records(output_path))
         print(
-            "Round trip matches:",
-            loaded_records == sample_records,
+            f"JSONL: records={count}, "
+            f"round_trip={loaded_records == sample_records}, "
+            f"path={output_path}"
         )
-
-    print()
-    print("Temporary JSONL file cleaned up automatically.")
 
 
 if __name__ == "__main__":

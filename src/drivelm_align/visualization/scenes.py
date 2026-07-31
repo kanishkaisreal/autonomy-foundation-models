@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
 
 from drivelm_align.data.grouping import (
@@ -26,7 +27,9 @@ def render_drivelm_multiview_scene(
     frame_token: str,
     output_path: str | Path,
 ) -> Path:
-    """Render one DriveLM frame using all six camera views."""
+    """Render one synchronized frame with identifiers and object boxes."""
+    import matplotlib.pyplot as plt
+
     if frame_token not in group.frame_tokens:
         raise ValueError(
             f"Frame {frame_token!r} does not belong to "
@@ -144,3 +147,25 @@ def render_drivelm_multiview_scene(
     plt.close(figure)
 
     return output_path
+
+
+def main() -> None:
+    """Render one real multiview frame to a temporary file using F5."""
+    from drivelm_align.data._debug import build_debug_grouping
+
+    grouping = build_debug_grouping(scene_count=1)
+    group = next(iter(grouping.groups.values()))
+    frame_token = group.frame_tokens[0]
+
+    with TemporaryDirectory(prefix="drivelm-scene-debug-") as directory:
+        os.environ.setdefault("MPLCONFIGDIR", directory)
+        output_path = render_drivelm_multiview_scene(
+            group,
+            frame_token=frame_token,
+            output_path=Path(directory) / "multiview.png",
+        )
+        print(f"Rendered multiview figure: {output_path}")
+
+
+if __name__ == "__main__":
+    main()

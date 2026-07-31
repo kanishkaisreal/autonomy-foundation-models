@@ -304,3 +304,32 @@ def group_records_by_scene(
         parsed_object_count=grouped_counts["parsed object"],
         rejected_object_count=grouped_counts["rejected object"],
     )
+
+
+def main() -> None:
+    """Group a few real scenes for local F5 debugging."""
+    from drivelm_align.data._debug import (
+        build_debug_grouping_inputs,
+    )
+
+    scene_index, images, qa, objects = build_debug_grouping_inputs(
+        scene_count=3
+    )
+    grouping = group_records_by_scene(
+        scene_index=scene_index,
+        image_resolution=images,
+        qa_extraction=qa,
+        object_extraction=objects,
+    )
+    print(
+        "DriveLM grouping: "
+        f"scenes={grouping.scene_count}, "
+        f"frames={grouping.frame_count}, "
+        f"images={grouping.resolved_image_count}, "
+        f"QA={grouping.qa_count:,}, "
+        f"objects={grouping.parsed_object_count}"
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -65,10 +65,10 @@ def _partition_statistics(
         for record in group.object_records
     ]
 
-    scene_descriptions: list[str] = []
-
-    for group in partition.scene_groups:
-        description = next(
+    # DriveLM supplies free-text scene descriptions rather than a
+    # separate controlled scene-condition label.
+    scene_descriptions = [
+        next(
             (
                 record.scene_description.strip()
                 for record in group.qa_records
@@ -77,7 +77,8 @@ def _partition_statistics(
             ),
             "unknown",
         )
-        scene_descriptions.append(description)
+        for group in partition.scene_groups
+    ]
 
     answers = [
         record.answer
@@ -128,7 +129,7 @@ def _partition_statistics(
 def compute_split_statistics(
     assignment: DriveLMRecordSplitAssignment,
 ) -> dict[str, dict[str, object]]:
-    """Compute machine-readable statistics for every split."""
+    """Compute source-derived distributions for all three splits."""
     return {
         "train": _partition_statistics(
             assignment.train
@@ -140,3 +141,21 @@ def compute_split_statistics(
             assignment.test
         ),
     }
+
+
+def main() -> None:
+    """Compute compact real-data split statistics using F5."""
+    from drivelm_align.data._debug import build_debug_assignment
+
+    statistics = compute_split_statistics(build_debug_assignment())
+    for split_name, split_statistics in statistics.items():
+        counts = split_statistics["counts"]
+        print(
+            f"{split_name}: scenes={counts['scenes']}, "
+            f"QA={counts['qa_records']:,}, "
+            f"tasks={len(split_statistics['tasks'])}"
+        )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
-from drivelm_align.data.raw import (
-    DriveLMAnnotations,
-    load_drivelm_annotations,
-)
+from drivelm_align.data.raw import DriveLMAnnotations
 
 
 class DriveLMIndexError(ValueError):
@@ -226,60 +222,20 @@ def build_drivelm_scene_index(
         qa_count=total_qa_count,
     )
 
+
 def main() -> None:
-    """Build and inspect the DriveLM scene/frame index using F5."""
-    repository_root = Path(__file__).resolve().parents[3]
+    """Build a small real-data scene index for local F5 debugging."""
+    from drivelm_align.data._debug import load_debug_annotations
 
-    annotation_path = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "QA_dataset_nus"
-        / "v1_1_train_nus.json"
+    scene_index = build_drivelm_scene_index(
+        load_debug_annotations(scene_count=2)
     )
-
-    annotations = load_drivelm_annotations(annotation_path)
-    index = build_drivelm_scene_index(annotations)
-
-    print("DriveLM scene index built successfully.")
-    print()
-    print(f"Scenes indexed:     {index.scene_count:,}")
-    print(f"Frames indexed:     {index.frame_count:,}")
-    print(f"QA records indexed: {index.qa_count:,}")
-
-    first_scene_token = next(iter(index.scenes), None)
-
-    if first_scene_token is None:
-        return
-
-    scene_entry = index.scenes[first_scene_token]
-
-    print()
-    print(f"First scene token:  {scene_entry.scene_token}")
-    print(f"Description:        {scene_entry.scene_description}")
-    print(f"Frames in scene:    {scene_entry.frame_count}")
-    print(f"QA in scene:        {scene_entry.qa_count}")
-    print(f"Objects in scene:   {scene_entry.object_count}")
     print(
-        f"Image references:   "
-        f"{scene_entry.image_reference_count}"
+        "DriveLM index: "
+        f"scenes={scene_index.scene_count}, "
+        f"frames={scene_index.frame_count}, "
+        f"QA={scene_index.qa_count:,}"
     )
-
-    first_frame_token = scene_entry.frame_tokens[0]
-    frame_entry = index.frames[first_frame_token]
-
-    print()
-    print(f"First frame token:  {frame_entry.frame_token}")
-    print(f"Owning scene:       {frame_entry.scene_token}")
-    print(f"QA in frame:        {frame_entry.qa_count}")
-    print(f"Objects in frame:   {frame_entry.object_count}")
-    print(f"Cameras:            {list(frame_entry.camera_names)}")
-    print("QA counts by task:")
-
-    for task_name, task_count in (
-        frame_entry.qa_counts_by_task.items()
-    ):
-        print(f"  {task_name}: {task_count}")
 
 
 if __name__ == "__main__":

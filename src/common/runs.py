@@ -1,16 +1,15 @@
 from __future__ import annotations
-from tempfile import TemporaryDirectory
-import re
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 
 import json
+import re
 import shlex
 import subprocess
 import sys
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -81,10 +80,8 @@ def _get_git_status_short(project_root: Path) -> list[str] | None:
         for line in result.stdout.splitlines()
         if line.strip()
     ]
-    
-    
-    
-    
+
+
 def create_experiment_id(
     project_name: str,
     experiment_name: str | None = None,
@@ -293,8 +290,8 @@ def snapshot_run_config(
         "environment": environment_path,
         "run_snapshot": snapshot_path,
     }
-    
-    
+
+
 def main() -> None:
     """Verify experiment creation and snapshotting using temporary files."""
     repository_root = Path(__file__).resolve().parents[2]

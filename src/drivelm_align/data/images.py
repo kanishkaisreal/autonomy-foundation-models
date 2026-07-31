@@ -1,15 +1,12 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from collections import defaultdict
 
 from PIL import Image, UnidentifiedImageError
 
-from drivelm_align.data.raw import (
-    DriveLMAnnotations,
-    load_drivelm_annotations,
-)
+from drivelm_align.data.raw import DriveLMAnnotations
 
 
 class DriveLMImageResolutionError(ValueError):
@@ -52,6 +49,70 @@ class DriveLMImagePathResolution:
     reference_count: int
     resolved_count: int
     unresolved_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DriveLMImageIssue:
+    """One image-quality problem discovered during validation."""
+
+    issue_type: str
+    scene_token: str
+    frame_token: str
+    camera_name: str
+    absolute_path: Path | None
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedDriveLMImage:
+    """Metadata collected from one successfully decoded image."""
+
+    scene_token: str
+    frame_token: str
+    camera_name: str
+    absolute_path: Path
+    width: int
+    height: int
+    image_format: str
+    image_mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class DriveLMImageValidationReport:
+    """Aggregate data-quality report for DriveLM camera images."""
+
+    frame_count: int
+    reference_count: int
+    expected_required_view_count: int
+    validated_images: dict[
+        tuple[str, str, str],
+        ValidatedDriveLMImage,
+    ]
+    valid_image_count: int
+    missing_required_view_count: int
+    unresolved_reference_count: int
+    unreadable_image_count: int
+    dimension_mismatch_count: int
+    camera_mismatch_count: int
+    duplicate_path_group_count: int
+    duplicate_reference_count: int
+    required_view_failure_fraction: float
+    dimension_counts: dict[str, int]
+    format_counts: dict[str, int]
+    issues: tuple[DriveLMImageIssue, ...]
+    passed: bool
+
+
+class DriveLMImageValidationError(ValueError):
+    """Raised when DriveLM image quality fails configured requirements."""
+
+    def __init__(
+        self,
+        message: str,
+        report: DriveLMImageValidationReport,
+    ) -> None:
+        super().__init__(message)
+        self.report = report
 
 
 def _is_within_root(
@@ -414,9 +475,6 @@ def validate_drivelm_images(
     frame_count = 0
     missing_required_view_count = 0
 
-    # ---------------------------------------------------------
-    # Stage 1: detect camera views absent from the source JSON.
-    # ---------------------------------------------------------
     for scene_token in sorted(annotations.scenes):
         scene_data = annotations.scenes[scene_token]
         key_frames = scene_data.get("key_frames")
@@ -468,9 +526,7 @@ def validate_drivelm_images(
                     )
                 )
 
-    # ---------------------------------------------------------
-    # Stage 2: carry unresolved Function 015 references forward.
-    # ---------------------------------------------------------
+    # Unresolved references remain explicit in the quality report.
     for unresolved_image in resolution.unresolved:
         reference_key = (
             unresolved_image.scene_token,
@@ -495,9 +551,6 @@ def validate_drivelm_images(
             )
         )
 
-    # ---------------------------------------------------------
-    # Stage 3: open and decode every resolved image.
-    # ---------------------------------------------------------
     unreadable_image_count = 0
     dimension_mismatch_count = 0
     camera_mismatch_count = 0
@@ -629,9 +682,6 @@ def validate_drivelm_images(
             image_mode=image_mode,
         )
 
-    # ---------------------------------------------------------
-    # Stage 4: detect reuse of one path by multiple references.
-    # ---------------------------------------------------------
     duplicate_path_groups = {
         image_path: tuple(reference_keys)
         for image_path, reference_keys
@@ -667,9 +717,6 @@ def validate_drivelm_images(
             )
         )
 
-    # ---------------------------------------------------------
-    # Stage 5: calculate missing-view tolerance.
-    # ---------------------------------------------------------
     expected_required_view_count = (
         frame_count * len(required_camera_names)
     )
@@ -768,209 +815,38 @@ def validate_drivelm_images(
 
     return report
 
-def _print_image_validation_report(
-    report: DriveLMImageValidationReport,
-) -> None:
-    """Print a concise DriveLM image-quality report."""
-    print("DriveLM image validation report")
-    print()
-    print(f"Passed:                       {report.passed}")
-    print(f"Frames examined:              {report.frame_count:,}")
-    print(
-        f"Image references:             "
-        f"{report.reference_count:,}"
-    )
-    print(
-        f"Expected required views:      "
-        f"{report.expected_required_view_count:,}"
-    )
-    print(
-        f"Valid images:                 "
-        f"{report.valid_image_count:,}"
-    )
-    print(
-        f"Missing required views:       "
-        f"{report.missing_required_view_count:,}"
-    )
-    print(
-        f"Unresolved references:        "
-        f"{report.unresolved_reference_count:,}"
-    )
-    print(
-        f"Unreadable images:            "
-        f"{report.unreadable_image_count:,}"
-    )
-    print(
-        f"Dimension mismatches:         "
-        f"{report.dimension_mismatch_count:,}"
-    )
-    print(
-        f"Camera mismatches:            "
-        f"{report.camera_mismatch_count:,}"
-    )
-    print(
-        f"Duplicate path groups:        "
-        f"{report.duplicate_path_group_count:,}"
-    )
-    print(
-        f"Duplicate extra references:   "
-        f"{report.duplicate_reference_count:,}"
-    )
-    print(
-        f"Required-view failure rate:   "
-        f"{report.required_view_failure_fraction:.6%}"
-    )
 
-    print()
-    print("Dimension distribution:")
-
-    for dimensions, count in report.dimension_counts.items():
-        print(f"  {dimensions}: {count:,}")
-
-    print()
-    print("Image format distribution:")
-
-    for image_format, count in report.format_counts.items():
-        print(f"  {image_format}: {count:,}")
-
-    if report.issues:
-        print()
-        print("First image-quality issues:")
-
-        for issue in report.issues[:10]:
-            print()
-            print(f"  Type:    {issue.issue_type}")
-            print(
-                f"  Source:  scene={issue.scene_token}, "
-                f"frame={issue.frame_token}, "
-                f"camera={issue.camera_name}"
-            )
-            print(f"  Path:    {issue.absolute_path}")
-            print(f"  Detail:  {issue.detail}")
-            
-            
-            
-
-@dataclass(frozen=True, slots=True)
-class DriveLMImageIssue:
-    """One image-quality problem discovered during validation."""
-
-    issue_type: str
-    scene_token: str
-    frame_token: str
-    camera_name: str
-    absolute_path: Path | None
-    detail: str
-
-
-@dataclass(frozen=True, slots=True)
-class ValidatedDriveLMImage:
-    """Metadata collected from one successfully decoded image."""
-
-    scene_token: str
-    frame_token: str
-    camera_name: str
-    absolute_path: Path
-    width: int
-    height: int
-    image_format: str
-    image_mode: str
-
-
-@dataclass(frozen=True, slots=True)
-class DriveLMImageValidationReport:
-    """Aggregate data-quality report for DriveLM camera images."""
-
-    frame_count: int
-    reference_count: int
-    expected_required_view_count: int
-
-    validated_images: dict[
-        tuple[str, str, str],
-        ValidatedDriveLMImage,
-    ]
-
-    valid_image_count: int
-    missing_required_view_count: int
-    unresolved_reference_count: int
-    unreadable_image_count: int
-    dimension_mismatch_count: int
-    camera_mismatch_count: int
-    duplicate_path_group_count: int
-    duplicate_reference_count: int
-
-    required_view_failure_fraction: float
-    dimension_counts: dict[str, int]
-    format_counts: dict[str, int]
-    issues: tuple[DriveLMImageIssue, ...]
-    passed: bool
-
-
-class DriveLMImageValidationError(ValueError):
-    """Raised when DriveLM image quality fails configured requirements."""
-
-    def __init__(
-        self,
-        message: str,
-        report: DriveLMImageValidationReport,
-    ) -> None:
-        super().__init__(message)
-        self.report = report
-        
-        
-        
-        
 def main() -> None:
-    """Resolve and validate DriveLM training images using F5."""
-    repository_root = Path(__file__).resolve().parents[3]
-
-    annotation_path = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "QA_dataset_nus"
-        / "v1_1_train_nus.json"
+    """Resolve and validate one real scene for local F5 debugging."""
+    from drivelm_align.data._debug import (
+        load_debug_annotations,
+        training_image_root,
     )
 
-    training_image_root = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "nuscenes"
-        / "samples"
-    )
-
-    annotations = load_drivelm_annotations(annotation_path)
-
+    annotations = load_debug_annotations(scene_count=1)
     resolution = resolve_drivelm_image_paths(
-        annotations=annotations,
-        image_root=training_image_root,
+        annotations,
+        training_image_root(),
     )
-
-    required_cameras = (
-        "CAM_BACK",
-        "CAM_BACK_LEFT",
-        "CAM_BACK_RIGHT",
-        "CAM_FRONT",
-        "CAM_FRONT_LEFT",
-        "CAM_FRONT_RIGHT",
+    report = validate_drivelm_images(
+        annotations,
+        resolution,
+        required_camera_names=(
+            "CAM_BACK",
+            "CAM_BACK_LEFT",
+            "CAM_BACK_RIGHT",
+            "CAM_FRONT",
+            "CAM_FRONT_LEFT",
+            "CAM_FRONT_RIGHT",
+        ),
+        expected_dimensions=(1600, 900),
     )
-
-    try:
-        report = validate_drivelm_images(
-            annotations=annotations,
-            resolution=resolution,
-            required_camera_names=required_cameras,
-            expected_dimensions=(1600, 900),
-            max_missing_fraction=0.0,
-            fail_on_duplicate_paths=True,
-        )
-
-    except DriveLMImageValidationError as exc:
-        _print_image_validation_report(exc.report)
-        raise
-
-    _print_image_validation_report(report)
+    print(
+        "DriveLM images: "
+        f"resolved={resolution.resolved_count}, "
+        f"unresolved={resolution.unresolved_count}, "
+        f"valid={report.valid_image_count}"
+    )
 
 
 if __name__ == "__main__":

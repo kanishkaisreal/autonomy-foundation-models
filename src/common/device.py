@@ -117,25 +117,18 @@ def resolve_compute_device(requested_device: str) -> ComputeDevice:
 
 
 def main() -> None:
-    """Resolve the configured device for manual F5 execution."""
-
+    """Resolve the configured compute device using F5."""
     repository_root = Path(__file__).resolve().parents[2]
     config_path = repository_root / "configs" / "base.yaml"
 
     config = load_project_config(config_path)
     validate_project_config(config, project_root=repository_root)
-
     device = resolve_compute_device(config.runtime.device)
-
-    print("Compute device resolved successfully.")
-    print()
-    print(f"Requested device: {device.requested}")
-    print(f"Resolved device:  {device.resolved}")
-    print(f"PyTorch device:   {device.torch_device}")
-    print(f"Device name:      {device.device_name}")
-    print(f"CUDA available:   {device.cuda_available}")
-    print(f"MPS built:        {device.mps_built}")
-    print(f"MPS available:    {device.mps_available}")
+    print(
+        f"Device: requested={device.requested}, "
+        f"resolved={device.resolved}, "
+        f"name={device.device_name}"
+    )
 
 
 if __name__ == "__main__":

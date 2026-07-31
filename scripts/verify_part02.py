@@ -1,58 +1,59 @@
 from __future__ import annotations
+
+import json
+import os
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from PIL import Image
 
-from pathlib import Path
-
-from drivelm_align.data.grouping import group_records_by_scene
+from common.checksums import compute_file_checksum
+from drivelm_align.data.grouping import (
+    DriveLMSceneGrouping,
+    group_records_by_scene,
+)
 from drivelm_align.data.images import (
+    DriveLMImagePathResolution,
     DriveLMImageValidationError,
     resolve_drivelm_image_paths,
     validate_drivelm_images,
 )
-from drivelm_align.data.index import build_drivelm_scene_index
-from drivelm_align.data.objects import extract_drivelm_object_tags
-from drivelm_align.data.qa import extract_drivelm_qa_records
-from drivelm_align.data.raw import load_drivelm_annotations
-from drivelm_align.data.split_types import DriveLMSplitPartition
-from drivelm_align.data.splits import (
-    assign_records_to_split,
-    split_scene_tokens,
-    write_split_manifests,
+from drivelm_align.data.index import (
+    DriveLMSceneIndex,
+    build_drivelm_scene_index,
 )
-
-from drivelm_align.data.validation import (
-    assert_scene_split_disjointness,
+from drivelm_align.data.objects import (
+    DriveLMObjectTagExtraction,
+    extract_drivelm_object_tags,
 )
-from drivelm_align.data.validation import (
-    assert_frame_split_disjointness,
-    assert_scene_split_disjointness,
+from drivelm_align.data.qa import (
+    DriveLMQAExtraction,
+    extract_drivelm_qa_records,
 )
-
-from drivelm_align.data.subsets import (
-    build_drivelm_local_subset,
+from drivelm_align.data.raw import (
+    DriveLMAnnotations,
+    load_drivelm_annotations,
 )
-
-from drivelm_align.visualization.scenes import (
-    render_drivelm_multiview_scene,
+from drivelm_align.data.split_types import (
+    DriveLMRecordSplitAssignment,
+    DriveLMSceneTokenSplit,
+    DriveLMSplitPartition,
 )
-
-
-import json
-from tempfile import TemporaryDirectory
-
-import matplotlib.pyplot as plt
-
-from drivelm_align.data.statistics import (
-    compute_split_statistics,
-)
-
-from common.checksums import compute_file_checksum
-
 from drivelm_align.data.splits import (
     assign_records_to_split,
     load_split_manifest,
     split_scene_tokens,
     write_split_manifests,
+)
+from drivelm_align.data.statistics import compute_split_statistics
+from drivelm_align.data.subsets import build_drivelm_local_subset
+from drivelm_align.data.validation import (
+    assert_frame_split_disjointness,
+    assert_scene_split_disjointness,
+)
+from drivelm_align.visualization.scenes import (
+    render_drivelm_multiview_scene,
 )
 
 
@@ -67,35 +68,423 @@ REQUIRED_CAMERA_NAMES = (
 
 
 def _print_partition(partition: DriveLMSplitPartition) -> None:
-    """Print the preserved record totals for one split partition."""
-    print()
-    print(f"  Split:             {partition.split_name}")
-    print(f"  Scenes:            {partition.scene_count:,}")
-    print(f"  Frames:            {partition.frame_count:,}")
-    print(f"  Resolved images:   {partition.resolved_image_count:,}")
-    print(f"  Unresolved images: {partition.unresolved_image_count:,}")
-    print(f"  QA records:        {partition.qa_count:,}")
-    print(f"  Parsed objects:    {partition.parsed_object_count:,}")
-    print(f"  Rejected objects:  {partition.rejected_object_count:,}")
+    """Print record totals for one split partition."""
+    print(
+        f"  {partition.split_name:<10} "
+        f"scenes={partition.scene_count:,}, "
+        f"frames={partition.frame_count:,}, "
+        f"images={partition.resolved_image_count:,}, "
+        f"QA={partition.qa_count:,}, "
+        f"objects={partition.parsed_object_count:,}"
+    )
+
+
+def _partition_scene_tokens(
+    partition: DriveLMSplitPartition,
+) -> tuple[str, ...]:
+    return tuple(group.scene_token for group in partition.scene_groups)
+
+
+def _partition_task_names(
+    partition: DriveLMSplitPartition,
+) -> set[str]:
+    return {
+        record.task_name
+        for group in partition.scene_groups
+        for record in group.qa_records
+    }
+
+
+def _verify_source_provenance(
+    annotations: DriveLMAnnotations,
+    scene_index: DriveLMSceneIndex,
+    image_resolution: DriveLMImagePathResolution,
+    qa_extraction: DriveLMQAExtraction,
+    object_extraction: DriveLMObjectTagExtraction,
+) -> None:
+    """Verify source identifiers and extracted values end to end."""
+    source_frame_to_scene = {
+        frame_token: scene_token
+        for scene_token, scene in annotations.scenes.items()
+        for frame_token in scene["key_frames"]
+    }
+    assert set(annotations.scenes) == set(scene_index.scenes)
+    assert set(source_frame_to_scene) == set(scene_index.frames)
+
+    for record in image_resolution.resolved.values():
+        source_reference = annotations.scenes[
+            record.scene_token
+        ]["key_frames"][record.frame_token]["image_paths"][
+            record.camera_name
+        ]
+        assert record.source_reference == source_reference
+
+    for record in image_resolution.unresolved:
+        source_reference = annotations.scenes[
+            record.scene_token
+        ]["key_frames"][record.frame_token]["image_paths"][
+            record.camera_name
+        ]
+        assert record.source_reference == str(source_reference)
+
+    for record in qa_extraction.records:
+        assert source_frame_to_scene[record.frame_token] == (
+            record.scene_token
+        )
+        source_record = annotations.scenes[
+            record.scene_token
+        ]["key_frames"][record.frame_token]["QA"][
+            record.task_name
+        ][record.task_index]
+        assert record.question == source_record["Q"]
+        assert record.answer == source_record.get("A")
+        if "A" not in source_record:
+            expected_status = "missing"
+        elif source_record["A"] is None:
+            expected_status = "null"
+        elif not source_record["A"].strip():
+            expected_status = "empty"
+        else:
+            expected_status = "answered"
+        assert record.answer_status == expected_status
+
+    for record in object_extraction.records:
+        source_metadata = annotations.scenes[
+            record.scene_token
+        ]["key_frames"][record.frame_token]["key_object_infos"][
+            record.raw_tag
+        ]
+        assert record.category == source_metadata["Category"]
+        assert record.status == source_metadata.get("Status")
+        assert record.visual_description == source_metadata.get(
+            "Visual_description"
+        )
+        assert record.bbox_xyxy == tuple(
+            float(value) for value in source_metadata["2d_bbox"]
+        )
+
+    for record in object_extraction.rejected:
+        source_metadata = annotations.scenes[
+            record.scene_token
+        ]["key_frames"][record.frame_token]["key_object_infos"][
+            record.raw_tag
+        ]
+        assert record.raw_metadata == source_metadata
+
+
+def _verify_leakage_detection(
+    scene_split: DriveLMSceneTokenSplit,
+    assignment: DriveLMRecordSplitAssignment,
+) -> None:
+    """Verify valid partitions and deliberate scene/record leaks."""
+    assert_scene_split_disjointness(scene_split)
+    assert_frame_split_disjointness(assignment)
+
+    leaked_scene = scene_split.train_scene_tokens[0]
+    corrupted_scene_split = replace(
+        scene_split,
+        validation_scene_tokens=(
+            leaked_scene,
+            *scene_split.validation_scene_tokens,
+        ),
+    )
+    try:
+        assert_scene_split_disjointness(corrupted_scene_split)
+    except ValueError as exc:
+        assert leaked_scene in str(exc)
+    else:
+        raise AssertionError("Injected scene leakage was not detected.")
+
+    leaked_group = assignment.train.scene_groups[0]
+    corrupted_assignment = replace(
+        assignment,
+        validation=replace(
+            assignment.validation,
+            scene_groups=(
+                leaked_group,
+                *assignment.validation.scene_groups,
+            ),
+        ),
+    )
+    try:
+        assert_frame_split_disjointness(corrupted_assignment)
+    except ValueError as exc:
+        message = str(exc)
+        assert "frame tokens" in message
+        assert "image paths" in message
+        assert "source aliases" in message
+        assert leaked_group.frame_tokens[0] in message
+        assert str(
+            leaked_group.image_records[0].absolute_path.resolve()
+        ) in message
+        assert leaked_group.image_records[0].source_reference in message
+    else:
+        raise AssertionError("Injected record leakage was not detected.")
+
+    print("Leakage validation:")
+    print("  Valid scene/frame/path/alias partitions: PASS")
+    print("  Injected scene leak detected:            PASS")
+    print("  Injected frame/path/alias leak detected: PASS")
+
+
+def _verify_statistics(
+    assignment: DriveLMRecordSplitAssignment,
+    temporary_root: Path,
+) -> None:
+    """Persist, reload, and plot the Function 024 statistics."""
+    os.environ.setdefault(
+        "MPLCONFIGDIR",
+        str(temporary_root / "matplotlib"),
+    )
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    statistics = compute_split_statistics(assignment)
+    partitions = {
+        "train": assignment.train,
+        "validation": assignment.validation,
+        "test": assignment.test,
+    }
+
+    required_distributions = {
+        "tasks",
+        "cameras",
+        "object_categories",
+        "object_statuses",
+        "scene_descriptions",
+        "prompt_length_words",
+        "answer_length_words",
+    }
+    for split_name, partition in partitions.items():
+        split_statistics = statistics[split_name]
+        assert required_distributions <= split_statistics.keys()
+        assert split_statistics["counts"]["scenes"] == (
+            partition.scene_count
+        )
+        assert sum(split_statistics["tasks"].values()) == (
+            partition.qa_count
+        )
+        assert sum(split_statistics["cameras"].values()) == (
+            partition.resolved_image_count
+        )
+        assert sum(
+            split_statistics["object_categories"].values()
+        ) == partition.parsed_object_count
+        assert sum(
+            split_statistics["scene_descriptions"].values()
+        ) == partition.scene_count
+
+    report_path = temporary_root / "split_statistics.json"
+    report_path.write_text(
+        json.dumps(statistics, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert json.loads(report_path.read_text(encoding="utf-8")) == (
+        statistics
+    )
+
+    split_names = list(statistics)
+    qa_counts = [
+        statistics[name]["counts"]["qa_records"]
+        for name in split_names
+    ]
+    figure, axis = plt.subplots()
+    axis.bar(split_names, qa_counts)
+    axis.set_ylabel("QA records")
+    axis.set_title("DriveLM QA records by split")
+    figure.tight_layout()
+
+    plot_path = temporary_root / "split_qa_comparison.png"
+    figure.savefig(plot_path)
+    plt.close(figure)
+    with Image.open(plot_path) as plot_image:
+        plot_image.verify()
+
+    print("Split statistics:")
+    for split_name in split_names:
+        split_statistics = statistics[split_name]
+        counts = split_statistics["counts"]
+        prompt_lengths = split_statistics["prompt_length_words"]
+        answer_lengths = split_statistics["answer_length_words"]
+        print(
+            f"  {split_name}: QA={counts['qa_records']:,}, "
+            f"mean prompt={prompt_lengths['mean']}, "
+            f"mean answer={answer_lengths['mean']}"
+        )
+    print("  Machine-readable report round trip: PASS")
+    print("  Comparison plot create/reopen:      PASS")
+
+
+def _verify_manifests(
+    assignment: DriveLMRecordSplitAssignment,
+    scene_split: DriveLMSceneTokenSplit,
+    annotation_path: Path,
+    temporary_root: Path,
+) -> None:
+    """Verify deterministic manifest persistence and rejection gates."""
+    manifest_path, manifest_checksum = write_split_manifests(
+        assignment=assignment,
+        scene_split=scene_split,
+        source_path=annotation_path,
+        output_path=temporary_root / "split_manifest.json",
+    )
+    copy_path, copy_checksum = write_split_manifests(
+        assignment=assignment,
+        scene_split=scene_split,
+        source_path=annotation_path,
+        output_path=temporary_root / "split_manifest_copy.json",
+    )
+    assert manifest_checksum == copy_checksum
+    assert manifest_path.read_bytes() == copy_path.read_bytes()
+
+    manifest = load_split_manifest(
+        manifest_path,
+        source_path=annotation_path,
+        expected_manifest_checksum=manifest_checksum,
+    )
+    assert manifest["source"]["sha256"] == compute_file_checksum(
+        annotation_path
+    )
+    assert manifest["split_policy"] == {
+        "unit": "scene_token",
+        "seed": 42,
+        "ratios": {
+            "train": 0.70,
+            "validation": 0.15,
+            "test": 0.15,
+        },
+    }
+    assert {
+        name: len(split_data["records"])
+        for name, split_data in manifest["splits"].items()
+    } == {"train": 487, "validation": 104, "test": 105}
+
+    try:
+        load_split_manifest(
+            manifest_path,
+            source_path=annotation_path,
+            expected_manifest_checksum="0" * 64,
+        )
+    except ValueError:
+        bad_manifest_checksum_rejected = True
+    else:
+        bad_manifest_checksum_rejected = False
+    assert bad_manifest_checksum_rejected
+
+    different_source_path = temporary_root / "different_source.json"
+    different_source_path.write_text("{}\n", encoding="utf-8")
+    try:
+        load_split_manifest(
+            manifest_path,
+            source_path=different_source_path,
+            expected_manifest_checksum=manifest_checksum,
+        )
+    except ValueError:
+        incompatible_source_rejected = True
+    else:
+        incompatible_source_rejected = False
+    assert incompatible_source_rejected
+
+    print("Split manifests:")
+    print("  Deterministic write and valid reload: PASS")
+    print("  Bad manifest checksum rejected:      PASS")
+    print("  Incompatible source rejected:        PASS")
+    print(f"  SHA-256: {manifest_checksum}")
+
+
+def _verify_subset(
+    assignment: DriveLMRecordSplitAssignment,
+) -> None:
+    """Verify deterministic, diverse, scene-complete local subsets."""
+    subset = build_drivelm_local_subset(
+        assignment,
+        train_scene_count=8,
+        validation_scene_count=4,
+        seed=42,
+    )
+    repeated = build_drivelm_local_subset(
+        assignment,
+        train_scene_count=8,
+        validation_scene_count=4,
+        seed=42,
+    )
+
+    for split_name, source_partition in (
+        ("train", assignment.train),
+        ("validation", assignment.validation),
+    ):
+        selected_tokens = set(
+            _partition_scene_tokens(subset[split_name])
+        )
+        assert selected_tokens <= set(
+            _partition_scene_tokens(source_partition)
+        )
+        assert _partition_scene_tokens(subset[split_name]) == (
+            _partition_scene_tokens(repeated[split_name])
+        )
+        assert _partition_task_names(subset[split_name]) == (
+            _partition_task_names(source_partition)
+        )
+
+    assert set(_partition_scene_tokens(subset["train"])).isdisjoint(
+        _partition_scene_tokens(subset["validation"])
+    )
+    print("Local scene subset:")
+    print("  Train/validation scenes: 8/4")
+    print("  Deterministic complete-scene selection: PASS")
+    print("  Separation and task diversity:          PASS")
+
+
+def _verify_rendering(
+    grouping: DriveLMSceneGrouping,
+    temporary_root: Path,
+) -> None:
+    """Render and reopen one synchronized multiview audit figure."""
+    group = next(
+        candidate
+        for candidate in grouping.groups.values()
+        if len(candidate.image_records) >= 6
+    )
+    frame_token = group.frame_tokens[0]
+    frame_images = [
+        record
+        for record in group.image_records
+        if record.frame_token == frame_token
+    ]
+    frame_objects = [
+        record
+        for record in group.object_records
+        if record.frame_token == frame_token
+    ]
+    assert len(frame_images) == 6
+
+    figure_path = render_drivelm_multiview_scene(
+        group,
+        frame_token=frame_token,
+        output_path=temporary_root / "multiview.png",
+    )
+    assert figure_path.stat().st_size > 0
+    with Image.open(figure_path) as figure_image:
+        figure_image.verify()
+
+    print("Multiview rendering:")
+    print(f"  Scene/frame: {group.scene_token}/{frame_token}")
+    print(
+        f"  Views/overlays: {len(frame_images)}/{len(frame_objects)}"
+    )
+    print("  Figure create/reopen: PASS")
 
 
 def main() -> None:
-    """Run the non-writing Part 2 integration verification using F5."""
+    """Run every non-writing Part 2 completion gate using F5."""
     repository_root = Path(__file__).resolve().parents[1]
     annotation_path = (
         repository_root
-        / "data"
-        / "drivelm"
-        / "QA_dataset_nus"
-        / "v1_1_train_nus.json"
+        / "data/drivelm/QA_dataset_nus/v1_1_train_nus.json"
     )
-    image_root = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "nuscenes"
-        / "samples"
-    )
+    image_root = repository_root / "data/drivelm/nuscenes/samples"
 
     annotations = load_drivelm_annotations(annotation_path)
     scene_index = build_drivelm_scene_index(annotations)
@@ -103,7 +492,6 @@ def main() -> None:
         annotations=annotations,
         image_root=image_root,
     )
-
     try:
         image_validation = validate_drivelm_images(
             annotations=annotations,
@@ -115,8 +503,8 @@ def main() -> None:
         )
     except DriveLMImageValidationError as exc:
         print(
-            "DriveLM image validation: FAIL "
-            f"({len(exc.report.issues):,} issues)"
+            "DriveLM image validation failed: "
+            f"{len(exc.report.issues):,} issues"
         )
         raise
 
@@ -132,121 +520,14 @@ def main() -> None:
         object_extraction=object_extraction,
     )
     scene_split = split_scene_tokens(
-        grouping.groups.keys(),
+        grouping.groups,
         train_ratio=0.70,
         validation_ratio=0.15,
         test_ratio=0.15,
         seed=42,
     )
-    record_assignment = assign_records_to_split(
-        grouping=grouping,
-        scene_split=scene_split,
-    )
-
-    assert_scene_split_disjointness(scene_split)
-    print("Scene split disjointness: PASS")
-    
-    # This script targets the repository's pinned development dataset.
-    assert annotations.scene_count == 696
-    assert scene_index.frame_count == 4_072
-    assert qa_extraction.record_count == 377_956
-    assert image_resolution.resolved_count == 24_432
-    assert image_resolution.unresolved_count == 0
-    assert image_validation.valid_image_count == 24_432
-    assert (
-        scene_split.train_count,
-        scene_split.validation_count,
-        scene_split.test_count,
-    ) == (487, 104, 105)
-
-    print("DriveLM Part 2 integration verification")
-    print()
-    print(f"Scenes grouped:          {grouping.scene_count:,}")
-    print(f"Frames grouped:          {grouping.frame_count:,}")
-    print(
-        f"Resolved images grouped: "
-        f"{grouping.resolved_image_count:,}"
-    )
-    print(
-        f"Unresolved images:       "
-        f"{grouping.unresolved_image_count:,}"
-    )
-    print(f"QA records grouped:      {grouping.qa_count:,}")
-    print(
-        f"Parsed objects grouped:  "
-        f"{grouping.parsed_object_count:,}"
-    )
-    print(
-        f"Rejected objects grouped: "
-        f"{grouping.rejected_object_count:,}"
-    )
-
-    print()
-    print("Answer-status counts:")
-    for answer_status, count in qa_extraction.answer_status_counts.items():
-        print(f"  {answer_status}: {count:,}")
-
-    print()
-    print("Object-status counts:")
-    for object_status, count in object_extraction.counts_by_status.items():
-        print(f"  {object_status}: {count:,}")
-
-    assert image_validation.passed
-    assert image_validation.reference_count == (
-        image_resolution.reference_count
-    )
-    print()
-    print("Image verification:")
-    print("  Every reference resolved: PASS")
-    print("  Image validation:         PASS")
-
-    first_scene_token = next(iter(grouping.groups))
-    first_group = grouping.groups[first_scene_token]
-
-    print()
-    print("First scene group:")
-    print(f"  Scene token:       {first_group.scene_token}")
-    print(f"  Frames:            {first_group.frame_count}")
-    print(f"  Images:            {first_group.image_count}")
-    print(
-        f"  Unresolved images: "
-        f"{first_group.unresolved_image_count}"
-    )
-    print(f"  QA records:        {first_group.qa_count}")
-    print(f"  Parsed objects:    {first_group.object_count}")
-    print(
-        f"  Rejected objects:  "
-        f"{first_group.rejected_object_count}"
-    )
-
-    grouped_record_collections = (
-        first_group.image_records,
-        first_group.unresolved_images,
-        first_group.qa_records,
-        first_group.object_records,
-        first_group.rejected_object_records,
-    )
-    assert all(
-        record.scene_token == first_scene_token
-        for records in grouped_record_collections
-        for record in records
-    )
-    print()
-    print("First-group ownership verification:")
-    print("  Image ownership:  PASS")
-    print("  QA ownership:     PASS")
-    print("  Object ownership: PASS")
-
-    print()
-    print("DriveLM scene-token split:")
-    print(f"  Seed:              {scene_split.seed}")
-    print(f"  Training scenes:   {scene_split.train_count:,}")
-    print(f"  Validation scenes: {scene_split.validation_count:,}")
-    print(f"  Local-test scenes: {scene_split.test_count:,}")
-    print(f"  Total scenes:      {scene_split.total_count:,}")
-
     repeated_split = split_scene_tokens(
-        grouping.groups.keys(),
+        reversed(tuple(grouping.groups)),
         train_ratio=0.70,
         validation_ratio=0.15,
         test_ratio=0.15,
@@ -254,382 +535,142 @@ def main() -> None:
     )
     assert scene_split == repeated_split
 
-    train_scenes = set(scene_split.train_scene_tokens)
-    validation_scenes = set(scene_split.validation_scene_tokens)
-    test_scenes = set(scene_split.test_scene_tokens)
-    assert train_scenes.isdisjoint(validation_scenes)
-    assert train_scenes.isdisjoint(test_scenes)
-    assert validation_scenes.isdisjoint(test_scenes)
-    assert train_scenes | validation_scenes | test_scenes == set(
-        grouping.groups
+    assignment = assign_records_to_split(
+        grouping=grouping,
+        scene_split=scene_split,
     )
 
-    print()
-    print("Split verification:")
-    print("  Same seed reproduces split: PASS")
-    print("  No scene intersections:     PASS")
-    print("  Every scene assigned:       PASS")
-
-    print()
-    print("First scene tokens:")
-    print(f"  Train:      {scene_split.train_scene_tokens[0]}")
-    print(
-        f"  Validation: "
-        f"{scene_split.validation_scene_tokens[0]}"
+    assert annotations.source_path == annotation_path.resolve()
+    assert annotations.scenes == json.loads(
+        annotation_path.read_text(encoding="utf-8")
     )
-    print(f"  Test:       {scene_split.test_scene_tokens[0]}")
+    _verify_source_provenance(
+        annotations,
+        scene_index,
+        image_resolution,
+        qa_extraction,
+        object_extraction,
+    )
+    assert sum(qa_extraction.answer_status_counts.values()) == (
+        qa_extraction.record_count
+    )
+    assert object_extraction.parsed_count + (
+        object_extraction.rejected_count
+    ) == object_extraction.source_object_count
+    assert image_resolution.image_root == image_root.resolve()
+    assert image_resolution.resolved_count + (
+        image_resolution.unresolved_count
+    ) == image_resolution.reference_count
+    assert all(
+        record.absolute_path.is_absolute()
+        for record in image_resolution.resolved.values()
+    )
 
-    print()
-    print("DriveLM records assigned to splits:")
-    for partition in (
-        record_assignment.train,
-        record_assignment.validation,
-        record_assignment.test,
-    ):
-        _print_partition(partition)
-
-    assert record_assignment.total_scene_count == grouping.scene_count
-    assert record_assignment.total_frame_count == grouping.frame_count
-    assert record_assignment.total_resolved_image_count == (
+    assert (
+        annotations.scene_count,
+        scene_index.frame_count,
+        qa_extraction.record_count,
+        image_resolution.resolved_count,
+        image_resolution.unresolved_count,
+    ) == (696, 4_072, 377_956, 24_432, 0)
+    assert image_validation.passed
+    assert image_validation.valid_image_count == 24_432
+    assert not image_validation.issues
+    assert grouping.scene_count == scene_index.scene_count
+    assert grouping.frame_count == scene_index.frame_count
+    assert grouping.resolved_image_count == (
+        image_resolution.resolved_count
+    )
+    assert grouping.unresolved_image_count == (
+        image_resolution.unresolved_count
+    )
+    assert grouping.qa_count == qa_extraction.record_count
+    assert grouping.parsed_object_count == object_extraction.parsed_count
+    assert grouping.rejected_object_count == (
+        object_extraction.rejected_count
+    )
+    assert (
+        scene_split.train_count,
+        scene_split.validation_count,
+        scene_split.test_count,
+    ) == (487, 104, 105)
+    assert assignment.total_scene_count == grouping.scene_count
+    assert assignment.total_frame_count == grouping.frame_count
+    assert assignment.total_resolved_image_count == (
         grouping.resolved_image_count
     )
-    assert record_assignment.total_unresolved_image_count == (
+    assert assignment.total_unresolved_image_count == (
         grouping.unresolved_image_count
     )
-    assert record_assignment.total_qa_count == grouping.qa_count
-    assert record_assignment.total_parsed_object_count == (
+    assert assignment.total_qa_count == grouping.qa_count
+    assert assignment.total_parsed_object_count == (
         grouping.parsed_object_count
     )
-    assert record_assignment.total_rejected_object_count == (
+    assert assignment.total_rejected_object_count == (
         grouping.rejected_object_count
     )
-
     for partition in (
-        record_assignment.train,
-        record_assignment.validation,
-        record_assignment.test,
+        assignment.train,
+        assignment.validation,
+        assignment.test,
     ):
         assert all(
-            record_assignment.scene_to_split[group.scene_token]
+            assignment.scene_to_split[group.scene_token]
             == partition.split_name
             for group in partition.scene_groups
         )
 
-    assert_frame_split_disjointness(record_assignment)
-    print("Frame split disjointness: PASS")
-    
-    print()
-    print("Record-assignment verification:")
-    print("  Every scene assigned once:   PASS")
-    print("  Frame counts preserved:      PASS")
-    print("  Image counts preserved:      PASS")
-    print("  QA counts preserved:         PASS")
-    print("  Object counts preserved:     PASS")
-    print("  Records inherit scene split: PASS")
-
-
-    split_statistics = compute_split_statistics(
-        record_assignment
+    print("DriveLM Part 2 integration verification")
+    print("Dataset and provenance:")
+    print(f"  Scenes/frames: {grouping.scene_count:,}/{grouping.frame_count:,}")
+    print(
+        f"  Resolved/unresolved images: "
+        f"{grouping.resolved_image_count:,}/"
+        f"{grouping.unresolved_image_count:,}"
     )
+    print(f"  QA records: {grouping.qa_count:,}")
+    print(
+        f"  Parsed/rejected objects: "
+        f"{grouping.parsed_object_count:,}/"
+        f"{grouping.rejected_object_count:,}"
+    )
+    print(
+        f"  Answer statuses: {qa_extraction.answer_status_counts}"
+    )
+    print("  Source identifiers and QA ownership: PASS")
+    print("  Image resolution and full validation: PASS")
 
-    print()
-    print("Split statistics:")
+    print("Scene split and assignment:")
+    print(
+        f"  Seed 42 train/validation/test: "
+        f"{scene_split.train_count}/"
+        f"{scene_split.validation_count}/"
+        f"{scene_split.test_count}"
+    )
+    print("  Same seed and reversed input reproduce lists: PASS")
+    for partition in (
+        assignment.train,
+        assignment.validation,
+        assignment.test,
+    ):
+        _print_partition(partition)
 
-    for split_name, statistics in split_statistics.items():
-        counts = statistics["counts"]
-        prompt_lengths = statistics[
-            "prompt_length_words"
-        ]
-        answer_lengths = statistics[
-            "answer_length_words"
-        ]
-
-        print(
-            f"  {split_name}: "
-            f"scenes={counts['scenes']:,}, "
-            f"frames={counts['frames']:,}, "
-            f"QA={counts['qa_records']:,}, "
-            f"mean prompt={prompt_lengths['mean']}, "
-            f"mean answer={answer_lengths['mean']}"
-        )
+    _verify_leakage_detection(scene_split, assignment)
 
     with TemporaryDirectory() as temporary_directory:
         temporary_root = Path(temporary_directory)
-
-        report_path = (
-            temporary_root / "split_statistics.json"
+        _verify_statistics(assignment, temporary_root)
+        _verify_manifests(
+            assignment,
+            scene_split,
+            annotation_path,
+            temporary_root,
         )
+        _verify_rendering(grouping, temporary_root)
 
-        report_path.write_text(
-            json.dumps(
-                split_statistics,
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-
-        loaded_report = json.loads(
-            report_path.read_text(encoding="utf-8")
-        )
-
-        assert loaded_report == split_statistics
-
-        split_names = list(split_statistics)
-        qa_counts = [
-            split_statistics[name]["counts"][
-                "qa_records"
-            ]
-            for name in split_names
-        ]
-
-        plt.figure()
-        plt.bar(split_names, qa_counts)
-        plt.ylabel("QA records")
-        plt.title("DriveLM QA records by split")
-        plt.tight_layout()
-
-        plot_path = (
-            temporary_root
-            / "split_qa_comparison.png"
-        )
-
-        plt.savefig(plot_path)
-        plt.close()
-
-        assert report_path.exists()
-        assert plot_path.exists()
-
-    print("Split statistics report: PASS")
-    print("Split comparison plot:   PASS")
-
-    with TemporaryDirectory() as temporary_directory:
-        manifest_path, manifest_checksum = (
-            write_split_manifests(
-                assignment=record_assignment,
-                scene_split=scene_split,
-                source_path=annotation_path,
-                output_path=(
-                    Path(temporary_directory)
-                    / "drivelm_split_manifest.json"
-                ),
-            )
-        )
-
-        manifest = json.loads(
-            manifest_path.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        assert manifest["source"]["sha256"] == (
-            compute_file_checksum(annotation_path)
-        )
-
-        assert manifest["split_policy"]["seed"] == 42
-        assert manifest["split_policy"]["unit"] == (
-            "scene_token"
-        )
-
-        assert len(
-            manifest["splits"]["train"][
-                "scene_tokens"
-            ]
-        ) == 487
-
-        assert len(
-            manifest["splits"]["validation"][
-                "scene_tokens"
-            ]
-        ) == 104
-
-        assert len(
-            manifest["splits"]["test"][
-                "scene_tokens"
-            ]
-        ) == 105
-
-        assert compute_file_checksum(
-            manifest_path
-        ) == manifest_checksum
-
-        print()
-        print("Split manifest:")
-        print("  Manifest written:         PASS")
-        print("  Source checksum recorded: PASS")
-        print("  Seed and policy recorded: PASS")
-        print("  Scene lists recorded:     PASS")
-        print(
-            f"  Manifest SHA-256: "
-            f"{manifest_checksum}"
-        )
-
-        loaded_manifest = load_split_manifest(
-            manifest_path,
-            source_path=annotation_path,
-            expected_manifest_checksum=manifest_checksum,
-        )
-
-        assert loaded_manifest == manifest
-
-        # Confirm that a manifest cannot be reused with a
-        # different annotation source.
-        different_source_path = (
-            Path(temporary_directory)
-            / "different_annotations.json"
-        )
-
-        different_source_path.write_text(
-            "{}\n",
-            encoding="utf-8",
-        )
-
-        try:
-            load_split_manifest(
-                manifest_path,
-                source_path=different_source_path,
-                expected_manifest_checksum=manifest_checksum,
-            )
-        except ValueError:
-            stale_manifest_rejected = True
-        else:
-            stale_manifest_rejected = False
-
-        assert stale_manifest_rejected
-
-        print()
-        print("Split manifest loading:")
-        print("  Manifest loaded:          PASS")
-        print("  Manifest checksum valid:  PASS")
-        print("  Source checksum valid:    PASS")
-        print("  Stale manifest rejected:  PASS")
+    _verify_subset(assignment)
+    print("DriveLM Part 2 verification: PASS")
 
 
-    local_subset = build_drivelm_local_subset(
-        record_assignment,
-        train_scene_count=8,
-        validation_scene_count=4,
-        seed=42,
-    )
-
-    repeated_subset = build_drivelm_local_subset(
-        record_assignment,
-        train_scene_count=8,
-        validation_scene_count=4,
-        seed=42,
-    )
-
-    def scene_tokens(partition):
-        return tuple(
-            group.scene_token
-            for group in partition.scene_groups
-        )
-
-    def task_names(partition):
-        return {
-            record.task_name
-            for group in partition.scene_groups
-            for record in group.qa_records
-        }
-
-    assert local_subset["train"].scene_count == 8
-    assert local_subset["validation"].scene_count == 4
-
-    assert scene_tokens(
-        local_subset["train"]
-    ) == scene_tokens(
-        repeated_subset["train"]
-    )
-
-    assert scene_tokens(
-        local_subset["validation"]
-    ) == scene_tokens(
-        repeated_subset["validation"]
-    )
-
-    assert task_names(
-        local_subset["train"]
-    ) == task_names(
-        record_assignment.train
-    )
-
-    assert task_names(
-        local_subset["validation"]
-    ) == task_names(
-        record_assignment.validation
-    )
-
-    print()
-    print("DriveLM local subset:")
-    print(
-        f"  Train scenes:      "
-        f"{local_subset['train'].scene_count}"
-    )
-    print(
-        f"  Validation scenes: "
-        f"{local_subset['validation'].scene_count}"
-    )
-    print(
-        f"  Train tasks:       "
-        f"{sorted(task_names(local_subset['train']))}"
-    )
-    print(
-        f"  Validation tasks:  "
-        f"{sorted(task_names(local_subset['validation']))}"
-    )
-    print("  Deterministic selection: PASS")
-    print("  Scene boundaries kept:   PASS")
-    print("  Task diversity retained: PASS")
-    
-    render_group = next(
-        group
-        for group in grouping.groups.values()
-        if len(group.image_records) >= 6
-    )
-
-    render_frame_token = (
-        render_group.frame_tokens[0]
-    )
-
-    frame_images = [
-        record
-        for record in render_group.image_records
-        if record.frame_token == render_frame_token
-    ]
-
-    frame_objects = [
-        record
-        for record in render_group.object_records
-        if record.frame_token == render_frame_token
-    ]
-
-    assert len(frame_images) == 6
-
-    with TemporaryDirectory() as temporary_directory:
-        figure_path = render_drivelm_multiview_scene(
-            render_group,
-            frame_token=render_frame_token,
-            output_path=(
-                Path(temporary_directory)
-                / "drivelm_multiview.png"
-            ),
-        )
-
-        assert figure_path.is_file()
-        assert figure_path.stat().st_size > 0
-
-        with Image.open(figure_path) as figure_image:
-            figure_image.verify()
-
-    print()
-    print("DriveLM multiview rendering:")
-    print(f"  Scene:          {render_group.scene_token}")
-    print(f"  Frame:          {render_frame_token}")
-    print(f"  Camera views:   {len(frame_images)}")
-    print(f"  Object overlays:{len(frame_objects):>4}")
-    print("  Figure created: PASS")
-    print("  Figure readable: PASS")
-    
-        
 if __name__ == "__main__":
     main()

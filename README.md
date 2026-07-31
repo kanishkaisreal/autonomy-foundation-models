@@ -74,7 +74,7 @@ Load the public DriveLM supervision, resolve camera assets, and create scene-lev
 | ID | Function / module | What it implements |
 |---:|---|---|
 | 013 | `load_drivelm_annotations src/drivelm_align/data/raw.py` | Load the official DriveLM annotation JSON and preserve every original scene, frame, QA, and object identifier. |
-| 014 | `index_drivelm_scenes src/drivelm_align/data/raw.py` | Build a scene-token index containing frames, camera views, QA records, and referenced objects. |
+| 014 | `build_drivelm_scene_index src/drivelm_align/data/index.py` | Build a scene-token index containing frames, camera views, QA records, and referenced objects. |
 | 015 | `resolve_drivelm_image_paths src/drivelm_align/data/images.py` | Resolve each camera reference against the local DriveLM/nuScenes image root. |
 | 016 | `validate_drivelm_images src/drivelm_align/data/images.py` | Validate image existence, readability, dimensions, camera identity, and duplicate paths. |
 | 017 | `extract_drivelm_qa_records src/drivelm_align/data/qa.py` | Flatten the native QA graph into typed task records while retaining source hierarchy and provenance. |
@@ -87,7 +87,7 @@ Load the public DriveLM supervision, resolve camera assets, and create scene-lev
 | 024 | `compute_split_statistics src/drivelm_align/data/statistics.py` | Measure task, camera, object, scene-condition, prompt-length, and answer-length distributions per split. |
 | 025 | `write_split_manifests src/drivelm_align/data/splits.py` | Persist scene lists and record manifests with source checksum, seed, and split policy. |
 | 026 | `load_split_manifest src/drivelm_align/data/splits.py` | Load an immutable split manifest and verify its source/checksum compatibility. |
-| 027 | `build_drivelm_smoke_subset src/drivelm_align/data/subsets.py` | Create tiny deterministic subsets that preserve scene boundaries and task diversity. |
+| 027 | `build_drivelm_local_subset src/drivelm_align/data/subsets.py` | Create tiny deterministic subsets that preserve scene boundaries and task diversity. |
 | 028 | `render_drivelm_multiview_scene src/drivelm_align/visualization/scenes.py` | Render synchronized camera views with scene/frame identifiers and key-object overlays. |
 
 </details>

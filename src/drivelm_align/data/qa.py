@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
-from drivelm_align.data.raw import (
-    DriveLMAnnotations,
-    load_drivelm_annotations,
-)
+from drivelm_align.data.raw import DriveLMAnnotations
 
 
 DriveLMAnswerStatus = Literal[
@@ -261,9 +257,7 @@ def extract_drivelm_qa_records(
                             f"index={task_index}."
                         )
 
-                    # ---------------------------------------------
                     # Classify the answer without altering it.
-                    # ---------------------------------------------
                     if "A" not in qa_record:
                         answer: str | None = None
                         answer_status: DriveLMAnswerStatus = "missing"
@@ -395,150 +389,18 @@ def extract_drivelm_qa_records(
 
 
 def main() -> None:
-    """Extract and inspect DriveLM training QA records using F5."""
-    repository_root = Path(__file__).resolve().parents[3]
-
-    annotation_path = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "QA_dataset_nus"
-        / "v1_1_train_nus.json"
-    )
-
-    annotations = load_drivelm_annotations(annotation_path)
+    """Extract QA from one real scene for local F5 debugging."""
+    from drivelm_align.data._debug import load_debug_annotations
 
     extraction = extract_drivelm_qa_records(
-        annotations,
-        strict_answers=False,
+        load_debug_annotations(scene_count=1)
     )
-
-    print("DriveLM QA extraction completed successfully.")
-    print()
+    sample = extraction.records[0]
     print(
-        f"QA records extracted: "
-        f"{extraction.record_count:,}"
+        f"DriveLM QA: records={extraction.record_count:,}, "
+        f"sample={sample.record_id}, "
+        f"status={sample.answer_status}"
     )
-    print(
-        f"Answered records:     "
-        f"{extraction.answered_count:,}"
-    )
-    print(
-        f"Unanswered records:   "
-        f"{extraction.unanswered_count:,}"
-    )
-
-    print()
-    print("QA counts by task:")
-
-    for task_name, task_count in (
-        extraction.counts_by_task.items()
-    ):
-        print(f"  {task_name}: {task_count:,}")
-
-    print()
-    print("Answer-status counts:")
-
-    for answer_status, count in (
-        extraction.answer_status_counts.items()
-    ):
-        print(f"  {answer_status}: {count:,}")
-
-    if not extraction.records:
-        print()
-        print("No QA records were extracted.")
-        return
-
-    first_record = extraction.records[0]
-
-    print()
-    print("First flattened QA record:")
-    print(f"  Record ID:     {first_record.record_id}")
-    print(f"  Scene:         {first_record.scene_token}")
-    print(f"  Frame:         {first_record.frame_token}")
-    print(f"  Task:          {first_record.task_name}")
-    print(f"  Index:         {first_record.task_index}")
-    print(f"  Question:      {first_record.question}")
-    print(f"  Answer:        {first_record.answer!r}")
-    print(
-        f"  Answer status: "
-        f"{first_record.answer_status}"
-    )
-
-    # ---------------------------------------------------------
-    # Manual round-trip verification.
-    # ---------------------------------------------------------
-    source_scene = annotations.scenes[
-        first_record.scene_token
-    ]
-
-    source_frame = source_scene["key_frames"][
-        first_record.frame_token
-    ]
-
-    source_qa_record = source_frame["QA"][
-        first_record.task_name
-    ][first_record.task_index]
-
-    assert source_qa_record["Q"] == first_record.question
-
-    if first_record.answer_status == "missing":
-        assert "A" not in source_qa_record
-    else:
-        assert "A" in source_qa_record
-        assert source_qa_record["A"] == first_record.answer
-
-    print()
-    print("Round-trip verification:")
-    print("  Scene token recovered:   PASS")
-    print("  Frame token recovered:   PASS")
-    print("  Original question:       PASS")
-    print("  Original answer state:   PASS")
-
-    first_unanswered_record = next(
-        (
-            record
-            for record in extraction.records
-            if record.answer_status != "answered"
-        ),
-        None,
-    )
-
-    if first_unanswered_record is not None:
-        print()
-        print("First QA record without a usable answer:")
-        print(
-            f"  Record ID:     "
-            f"{first_unanswered_record.record_id}"
-        )
-        print(
-            f"  Scene:         "
-            f"{first_unanswered_record.scene_token}"
-        )
-        print(
-            f"  Frame:         "
-            f"{first_unanswered_record.frame_token}"
-        )
-        print(
-            f"  Task:          "
-            f"{first_unanswered_record.task_name}"
-        )
-        print(
-            f"  Index:         "
-            f"{first_unanswered_record.task_index}"
-        )
-        print(
-            f"  Question:      "
-            f"{first_unanswered_record.question}"
-        )
-        print(
-            f"  Answer:        "
-            f"{first_unanswered_record.answer!r}"
-        )
-        print(
-            f"  Answer status: "
-            f"{first_unanswered_record.answer_status}"
-        )
 
 
 if __name__ == "__main__":

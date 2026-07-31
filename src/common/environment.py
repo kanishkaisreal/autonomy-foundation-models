@@ -233,42 +233,23 @@ def collect_environment_report(
 
 
 def main() -> None:
-    """Collect and save the current environment report using F5."""
+    """Collect a non-writing environment summary using F5."""
     repository_root = Path(__file__).resolve().parents[2]
     config_path = repository_root / "configs" / "base.yaml"
 
     config = load_project_config(config_path)
-    validate_project_config(
-        config,
-        project_root=repository_root,
-    )
-
-    output_path = repository_root / "outputs" / "environment.json"
+    validate_project_config(config, project_root=repository_root)
 
     report = collect_environment_report(
         project_root=repository_root,
         requested_device=config.runtime.device,
-        model_versions={
-            "vlm_checkpoint": config.models.vlm_checkpoint,
-            "text_checkpoint": config.models.text_checkpoint,
-            "radar_checkpoint": config.models.radar_checkpoint,
-        },
-        dataset_versions={},
-        output_path=output_path,
     )
-
-    print("Environment report created successfully.")
-    print()
-    print(f"Report path:       {output_path}")
-    print(f"Python version:    {report['python']['version']}")
-    print(f"Python executable: {report['python']['executable']}")
-    print(f"Conda environment: {report['python']['conda_environment']}")
-    print(f"PyTorch version:   {report['pytorch']['version']}")
-    print(f"Resolved device:   {report['accelerator']['resolved_device']}")
-    print(f"Device name:       {report['accelerator']['device_name']}")
-    print(f"Git branch:        {report['git']['branch']}")
-    print(f"Git commit:        {report['git']['commit']}")
-    print(f"Git dirty:         {report['git']['is_dirty']}")
+    print(
+        f"Environment: Python={report['python']['version']}, "
+        f"PyTorch={report['pytorch']['version']}, "
+        f"device={report['accelerator']['resolved_device']}, "
+        f"git_dirty={report['git']['is_dirty']}"
+    )
 
 
 if __name__ == "__main__":

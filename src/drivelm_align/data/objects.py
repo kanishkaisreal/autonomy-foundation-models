@@ -3,13 +3,9 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from drivelm_align.data.raw import (
-    DriveLMAnnotations,
-    load_drivelm_annotations,
-)
+from drivelm_align.data.raw import DriveLMAnnotations
 
 
 DEFAULT_CAMERA_NAMES = (
@@ -589,180 +585,23 @@ def extract_drivelm_object_tags(
 
 
 def main() -> None:
-    """Extract and inspect DriveLM object tags using F5."""
-    repository_root = Path(__file__).resolve().parents[3]
-
-    annotation_path = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "QA_dataset_nus"
-        / "v1_1_train_nus.json"
-    )
-
-    annotations = load_drivelm_annotations(
-        annotation_path
-    )
+    """Extract objects from one real scene for local F5 debugging."""
+    from drivelm_align.data._debug import load_debug_annotations
 
     extraction = extract_drivelm_object_tags(
-        annotations
+        load_debug_annotations(scene_count=1)
     )
-
-    print("DriveLM object-tag extraction completed.")
-    print()
-    print(
-        f"Source objects:   "
-        f"{extraction.source_object_count:,}"
+    sample_tag = (
+        extraction.records[0].raw_tag
+        if extraction.records
+        else "none"
     )
     print(
-        f"Parsed objects:   "
-        f"{extraction.parsed_count:,}"
+        "DriveLM objects: "
+        f"parsed={extraction.parsed_count}, "
+        f"rejected={extraction.rejected_count}, "
+        f"sample={sample_tag}"
     )
-    print(
-        f"Rejected objects: "
-        f"{extraction.rejected_count:,}"
-    )
-    print(
-        "Maximum tag/bbox center error: "
-        f"{extraction.maximum_center_error_pixels:.4f} pixels"
-    )
-
-    print()
-    print("Object counts by camera:")
-
-    for camera_name, count in (
-        extraction.counts_by_camera.items()
-    ):
-        print(f"  {camera_name}: {count:,}")
-
-    print()
-    print("Object counts by category:")
-
-    for category, count in (
-        extraction.counts_by_category.items()
-    ):
-        print(f"  {category}: {count:,}")
-
-    print()
-    print("Object counts by status:")
-
-    for status, count in (
-        extraction.counts_by_status.items()
-    ):
-        print(f"  {status}: {count:,}")
-
-    if extraction.records:
-        first_record = extraction.records[0]
-
-        print()
-        print("First parsed object:")
-        print(
-            f"  Record ID:          "
-            f"{first_record.record_id}"
-        )
-        print(
-            f"  Raw tag:            "
-            f"{first_record.raw_tag}"
-        )
-        print(
-            f"  Object ID:          "
-            f"{first_record.object_id}"
-        )
-        print(
-            f"  Camera:             "
-            f"{first_record.camera_name}"
-        )
-        print(
-            f"  Tag center:         "
-            f"({first_record.center_x}, "
-            f"{first_record.center_y})"
-        )
-        print(
-            f"  Category:           "
-            f"{first_record.category}"
-        )
-        print(
-            f"  Status:             "
-            f"{first_record.status!r}"
-        )
-        print(
-            f"  Description:        "
-            f"{first_record.visual_description!r}"
-        )
-        print(
-            f"  Bounding box:       "
-            f"{first_record.bbox_xyxy}"
-        )
-        print(
-            f"  Box width × height: "
-            f"{first_record.bbox_width:.2f} × "
-            f"{first_record.bbox_height:.2f}"
-        )
-        print(
-            f"  Center error:       "
-            f"{first_record.center_error_pixels:.4f} pixels"
-        )
-
-        # -----------------------------------------------------
-        # Manual source round-trip verification.
-        # -----------------------------------------------------
-        source_metadata = annotations.scenes[
-            first_record.scene_token
-        ]["key_frames"][
-            first_record.frame_token
-        ]["key_object_infos"][
-            first_record.raw_tag
-        ]
-
-        assert (
-            source_metadata["Category"]
-            == first_record.category
-        )
-
-        assert (
-            source_metadata.get("Status")
-            == first_record.status
-        )
-
-        assert (
-            source_metadata.get("Visual_description")
-            == first_record.visual_description
-        )
-
-        assert tuple(
-            float(value)
-            for value in source_metadata["2d_bbox"]
-        ) == first_record.bbox_xyxy
-
-        print()
-        print("Round-trip verification:")
-        print("  Scene token recovered:       PASS")
-        print("  Frame token recovered:       PASS")
-        print("  Original object tag:         PASS")
-        print("  Original object metadata:    PASS")
-
-    if extraction.rejected:
-        print()
-        print("First rejected object tags:")
-
-        for rejected_record in extraction.rejected[:10]:
-            print()
-            print(
-                f"  Scene:  "
-                f"{rejected_record.scene_token}"
-            )
-            print(
-                f"  Frame:  "
-                f"{rejected_record.frame_token}"
-            )
-            print(
-                f"  Tag:    "
-                f"{rejected_record.raw_tag!r}"
-            )
-            print(
-                f"  Reason: "
-                f"{rejected_record.reason}"
-            )
 
 
 if __name__ == "__main__":

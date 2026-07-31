@@ -15,8 +15,8 @@ class ConfigError(ValueError):
 
 class ConfigValidationError(ValueError):
     """Raised when loaded configuration values are operationally invalid."""
-    
-    
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectSection:
     name: str
@@ -394,31 +394,22 @@ def validate_project_config(
             "Project configuration validation failed:\n"
             f"{formatted_errors}"
         )
-        
-        
+
+
 
 def main() -> None:
-    """Load and validate the base configuration for manual F5 execution."""
+    """Load and validate the base configuration using F5."""
     repository_root = Path(__file__).resolve().parents[2]
     config_path = repository_root / "configs" / "base.yaml"
 
     config = load_project_config(config_path)
-    validate_project_config(
-        config,
-        project_root=repository_root,
+    validate_project_config(config, project_root=repository_root)
+    print(
+        f"Config: project={config.project.name}, "
+        f"seed={config.project.seed}, "
+        f"device={config.runtime.device}, "
+        f"precision={config.runtime.precision}"
     )
-
-    print("Configuration loaded and validated successfully.")
-    print()
-    print(config)
-    print()
-    print(f"Project name: {config.project.name}")
-    print(f"Seed: {config.project.seed}")
-    print(f"Requested device: {config.runtime.device}")
-    print(f"Precision: {config.runtime.precision}")
-    print(f"Data root: {repository_root / config.paths.data_root}")
-    print(f"Output root: {repository_root / config.paths.output_root}")
-    print(f"Pretrained VLM checkpoint: {config.models.vlm_checkpoint}")
 
 
 if __name__ == "__main__":

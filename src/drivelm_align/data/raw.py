@@ -156,54 +156,19 @@ def load_drivelm_annotations(
 
 
 def main() -> None:
-    """Load the local DriveLM annotations using F5."""
-    repository_root = Path(__file__).resolve().parents[3]
-
+    """Load the real training annotations for local F5 debugging."""
     annotation_path = (
-        repository_root
-        / "data"
-        / "drivelm"
-        / "QA_dataset_nus"
-        / "v1_1_train_nus.json"
+        Path(__file__).resolve().parents[3]
+        / "data/drivelm/QA_dataset_nus/v1_1_train_nus.json"
     )
-
     annotations = load_drivelm_annotations(annotation_path)
-
-    print("DriveLM annotations loaded successfully.")
-    print()
-    print(f"Source file: {annotations.source_path}")
-    print(f"Scenes:      {annotations.scene_count:,}")
-    print(f"Key frames:  {annotations.frame_count:,}")
-    print(f"QA records:  {annotations.qa_count:,}")
-
-    first_scene_token = next(iter(annotations.scenes), None)
-
-    if first_scene_token is not None:
-        first_scene = annotations.scenes[first_scene_token]
-
-        print()
-        print(f"First scene token: {first_scene_token}")
-        print(
-            "Scene description: "
-            f"{first_scene.get('scene_description')}"
-        )
-
-        first_frame_token = next(
-            iter(first_scene["key_frames"]),
-            None,
-        )
-
-        if first_frame_token is not None:
-            first_frame = first_scene["key_frames"][first_frame_token]
-
-            print(f"First frame token: {first_frame_token}")
-            print(
-                "Available QA tasks: "
-                f"{list(first_frame['QA'].keys())}"
-            )
+    print(
+        "DriveLM annotations: "
+        f"scenes={annotations.scene_count:,}, "
+        f"frames={annotations.frame_count:,}, "
+        f"QA={annotations.qa_count:,}"
+    )
 
 
 if __name__ == "__main__":
     main()
-    
-    

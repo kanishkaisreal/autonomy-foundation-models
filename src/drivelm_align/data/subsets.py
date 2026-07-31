@@ -71,7 +71,7 @@ def build_drivelm_local_subset(
     validation_scene_count: int = 4,
     seed: int = 42,
 ) -> dict[str, DriveLMSplitPartition]:
-    """Build deterministic scene-level train and validation subsets."""
+    """Select deterministic, task-diverse complete-scene subsets."""
     return {
         "train": _select_scene_groups(
             assignment.train,
@@ -84,3 +84,29 @@ def build_drivelm_local_subset(
             seed=seed + 1,
         ),
     }
+
+
+def main() -> None:
+    """Select a small complete-scene subset using F5."""
+    from drivelm_align.data._debug import build_debug_assignment
+
+    subset = build_drivelm_local_subset(
+        build_debug_assignment(),
+        train_scene_count=4,
+        validation_scene_count=2,
+        seed=42,
+    )
+    for split_name, partition in subset.items():
+        tasks = {
+            record.task_name
+            for group in partition.scene_groups
+            for record in group.qa_records
+        }
+        print(
+            f"{split_name}: scenes={partition.scene_count}, "
+            f"tasks={sorted(tasks)}"
+        )
+
+
+if __name__ == "__main__":
+    main()
